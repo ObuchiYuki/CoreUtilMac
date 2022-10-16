@@ -33,7 +33,11 @@ public struct RestorableState<Value: RawRepresentable> {
             UserDefaults.standard.set(newValue.rawValue, forKey: key)
         }
     }
-    public init(wrappedValue initialValue: Value, _ key: String) {
+    public init(wrappedValue initialValue: Value, _ key: String, file: String = #fileID, line: UInt = #line) {
+        #if DEBUG
+        GlobalOneLineChecker.register(label: key, file: file, line: line)
+        #endif
+        
         let wrappedValue: Value
         
         if let rawValue = UserDefaults.standard.object(forKey: key) as? Value.RawValue, let value = Value(rawValue: rawValue) {

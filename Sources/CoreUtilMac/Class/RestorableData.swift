@@ -14,6 +14,7 @@ private enum RestorableDataStatic {
     static let restorableDataURL = try! FileManager.default.allocTemporaryDirectory("RestorableData")
 }
 
+// Save Codable value as state
 @propertyWrapper
 public struct RestorableData<Value: Codable> {
     public struct Publisher: Combine.Publisher {
@@ -35,12 +36,11 @@ public struct RestorableData<Value: Codable> {
     
     public var wrappedValue: Value {
         get { self.projectedValue.subject.value }
-        set { self.projectedValue.subject.send(newValue); self.saveValue(value: newValue) }
-    }
-    
-    private func saveValue(value: Value) {
-        do { try RestorableDataStatic.encoder.encode(value).write(to: fileURL) } catch {
-            // TODO: Handle Error
+        set {
+            self.projectedValue.subject.send(newValue)
+            do { try RestorableDataStatic.encoder.encode(newValue).write(to: fileURL) } catch {
+                // TODO: Handle Error
+            }
         }
     }
     
@@ -51,9 +51,7 @@ public struct RestorableData<Value: Codable> {
         
         self.key = key
         self.fileURL = RestorableDataStatic.restorableDataURL.appendingPathComponent(key + ".json")
-        
-        let saved = FileManager.default.fileExists(atPath: fileURL.path)
-        
+                
         let wrappedValue: Value
         do {
             wrappedValue = try RestorableDataStatic.decoder.decode(Value.self, from: Data(contentsOf: fileURL))
@@ -62,9 +60,5 @@ public struct RestorableData<Value: Codable> {
         }
         
         self.projectedValue = Publisher(wrappedValue)
-        
-        if !saved {
-            saveValue(value: initialValue)
-        }
     }
 }

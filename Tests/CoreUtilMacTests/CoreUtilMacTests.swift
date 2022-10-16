@@ -147,14 +147,41 @@ final class CoreUtilClassTests: XCTestCase {
         defer { GlobalOneLineChecker.enableChecker() }
         
         do {
-            @RestorableData("value") var value = 10
+            @RestorableData("value") var value = 0
+            value = 10
             XCTAssertEqual(value, 10)
         }
         do {
             @RestorableData("value") var value = 0
             XCTAssertEqual(value, 10)
         }
+    }
+    
+    func test_RestorableState() throws {
+        do {
+            @RestorableState("value.state") var value = 0
+            value = 10
+            XCTAssertEqual(value, 10)
+        }
+        do {
+            @RestorableState("value.state") var value = 0
+            XCTAssertEqual(value, 10)
+        }
+    }
+    
+    func test_Terminal() throws {
+        enum TestState {
+            static var sinkValue = ""
+        }
         
+        let exp = expectation(description: "wait")
+        Terminal.run(URL(fileURLWithPath: "/bin/echo"), arguments: ["Hello", "World"])
+            .peek{ TestState.sinkValue = $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .finally{ exp.fulfill() }
+        
+        wait(for: [exp], timeout: 1)
+        
+        XCTAssertEqual(TestState.sinkValue, "Hello World")
     }
     
     // Ex+Combine
