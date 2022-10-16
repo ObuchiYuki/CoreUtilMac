@@ -130,6 +130,35 @@ final class CoreUtilClassTests: XCTestCase {
         XCTAssertEqual(TestState.sinkValue, 12)
     }
     
+    func test_PipeOperator() throws {
+        class Object {
+            var value = 0
+        }
+        let a = Object() => { $0.value = 10 }
+        XCTAssertEqual(a.value, 10)
+        
+        let b = 12 |> { $0 + 10 }
+        
+        XCTAssertEqual(b, 22)
+    }
+    
+    func test_RestorableData() throws {
+        GlobalOneLineChecker.disableChecker()
+        defer { GlobalOneLineChecker.enableChecker() }
+        
+        do {
+            @RestorableData("value") var value = 10
+            XCTAssertEqual(value, 10)
+        }
+        do {
+            @RestorableData("value") var value = 0
+            XCTAssertEqual(value, 10)
+        }
+        
+    }
+    
+    // Ex+Combine
+    
     func test_Publisher() throws {
         enum TestState {
             static var sinkValue = -1
@@ -166,28 +195,84 @@ final class CoreUtilClassTests: XCTestCase {
         XCTAssertEqual(TestState.sinkValue, [0, 10, 20, 3, 4])
     }
     
-    func test_CombineLatestCollection_multiQueue() throws {
-        enum TestState { static var sinkValue = [Int]() }
+//    func test_CombineLatestCollection_multiQueue() throws {
+//        enum TestState { static var sinkValue = [Int]() }
+//
+//        let publishers = Array({ CurrentValueSubject<Int, Never>($0) }, count: 10)
+//
+//        publishers.combineLatest
+//            .sink{ TestState.sinkValue = $0.map{ $0 } }.store(in: &objectBag)
+//
+//        let exp = expectation(description: "wait") => { $0.expectedFulfillmentCount = 10 }
+//
+//        for i in 0..<10 {
+//            DispatchQueue.global().async {
+//                publishers[i].send(i * 10)
+//                exp.fulfill()
+//            }
+//        }
+//
+//        print(TestState.sinkValue)
+//
+//        wait(for: [exp], timeout: 1)
+//
+//        print(TestState.sinkValue)
+//    }
+    
+    func test_shareReplay() {
+        enum TestState {
+            static var count = 0
+            static var totalFlow = 0
+        }
+        let publisher = PassthroughSubject<Int, Never>()
+        let mapp = publisher
+            .map{ TestState.count += 1; return $0 + 10 }
+            .shareReplay(1)
         
-        let publishers = Array({ CurrentValueSubject<Int, Never>($0) }, count: 10)
+        mapp.sink{ TestState.totalFlow += $0 }.store(in: &objectBag)
+        mapp.sink{ TestState.totalFlow += $0 }.store(in: &objectBag)
         
-        publishers.combineLatest
-            .sink{ TestState.sinkValue = $0.map{ $0 } }.store(in: &objectBag)
+        publisher.send(10)
         
-        let exp = expectation(description: "wait") => { $0.expectedFulfillmentCount = 10 }
-        
-        for i in 0..<10 {
-            DispatchQueue.global().async {
-                publishers[i].send(i * 10)
-                exp.fulfill()
-            }
+        XCTAssertEqual(TestState.count, 1)
+        XCTAssertEqual(TestState.totalFlow, 40)
+    }
+    
+    func test_Array_move() {
+        var array = Array({ $0 }, count: 5)
+        array.move(fromIndex: 4, toIndex: 0)
+        XCTAssertEqual(array, [4, 0, 1, 2, 3])
+        array.move(fromIndex: 0, toIndex: 5)
+        XCTAssertEqual(array, [0, 1, 2, 3, 4])
+        array.move(fromIndex: 3, toIndex: 2)
+        XCTAssertEqual(array, [0, 1, 3, 2, 4])
+    }
+    
+    func test_Array_moveRange() {
+        // [0, 1, 2, 3, 4]
+        var array = Array({ $0 }, count: 5) 
+        array.move(fromRange: 0...3, toIndex: 4)
+        XCTAssertEqual(array, [4, 0, 1, 2, 3])
+    }
+    
+    func test_OptionSet() {
+        struct Options: OptionSet {
+            var rawValue: UInt64
+            
+            static let option1 = Options(rawValue: 1 << 0)
+            static let option2 = Options(rawValue: 1 << 1)
+            static let option3 = Options(rawValue: 1 << 2)
+            static let option4 = Options(rawValue: 1 << 3)
         }
         
-        print(TestState.sinkValue)
-                
-        wait(for: [exp], timeout: 1)
+        var options = Options.all
+        XCTAssertTrue(options.contains(.option1))
+        XCTAssertTrue(options.contains(.option2))
+        XCTAssertTrue(options.contains(.option3))
+        XCTAssertTrue(options.contains(.option4))
         
-        print(TestState.sinkValue)
+        options.remove(.option2)
+        XCTAssertFalse(options.contains(.option2))
     }
 }
 

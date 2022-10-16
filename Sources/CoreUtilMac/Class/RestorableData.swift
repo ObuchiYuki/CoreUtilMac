@@ -8,14 +8,10 @@
 import Cocoa
 import Combine
 
-extension FileManager {
-    public static let temporaryDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.noname.app")
-}
-
-private let encoder = JSONEncoder()
-private let decoder = JSONDecoder()
-private let restorableDataURL = FileManager.temporaryDirectoryURL.appendingPathComponent("RestorableData") => {
-    try? FileManager.default.createDirectory(at: $0, withIntermediateDirectories: true, attributes: nil)
+private enum RestorableDataStatic {
+    static let encoder = JSONEncoder()
+    static let decoder = JSONDecoder()
+    static let restorableDataURL = try! FileManager.default.allocTemporaryDirectory("RestorableData")
 }
 
 @propertyWrapper
@@ -38,57 +34,37 @@ public struct RestorableData<Value: Codable> {
     public let fileURL: URL
     
     public var wrappedValue: Value {
-        get { projectedValue.subject.value }
-        set {
-            projectedValue.subject.send(newValue)
-            do { try encoder.encode(newValue).write(to: fileURL) } catch {}
+        get { self.projectedValue.subject.value }
+        set { self.projectedValue.subject.send(newValue); self.saveValue(value: newValue) }
+    }
+    
+    private func saveValue(value: Value) {
+        do { try RestorableDataStatic.encoder.encode(value).write(to: fileURL) } catch {
+            // TODO: Handle Error
         }
     }
-    public init(wrappedValue initialValue: Value, _ key: String) {
+    
+    public init(wrappedValue initialValue: Value, _ key: String, file: String = #fileID, line: UInt = #line) {
+        #if DEBUG
+        GlobalOneLineChecker.register(label: key, file: file, line: line)
+        #endif
+        
         self.key = key
-        self.fileURL = restorableDataURL.appendingPathComponent(key + ".json")
+        self.fileURL = RestorableDataStatic.restorableDataURL.appendingPathComponent(key + ".json")
+        
+        let saved = FileManager.default.fileExists(atPath: fileURL.path)
         
         let wrappedValue: Value
         do {
-            wrappedValue = try decoder.decode(Value.self, from: Data(contentsOf: fileURL))
+            wrappedValue = try RestorableDataStatic.decoder.decode(Value.self, from: Data(contentsOf: fileURL))
         } catch {
             wrappedValue = initialValue
         }
         
         self.projectedValue = Publisher(wrappedValue)
-    }
-}
-
-final public class NSImageContainer: Codable {
-    static let dataDirectoryURL = FileManager.temporaryDirectoryURL.appendingPathComponent("NSImageContainer") => {
-        try? FileManager.default.createDirectory(at: $0, withIntermediateDirectories: true, attributes: nil)
-    }
-    
-    public let image: NSImage
-    public let id: String
-    public init(_ image: NSImage) {
-        self.image = image
-        self.id = UUID().uuidString
-    }
-    
-    public static func wrap(_ image: NSImage) -> NSImageContainer { NSImageContainer(image) }
-    
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(id)
-        let fileURL = NSImageContainer.dataDirectoryURL.appendingPathComponent(id)
-        if !FileManager.default.fileExists(atPath: fileURL.path) {
-            try image.tiffRepresentation?.write(to: fileURL)
+        
+        if !saved {
+            saveValue(value: initialValue)
         }
-    }
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        let id = try container.decode(String.self)
-        let fileURL = NSImageContainer.dataDirectoryURL.appendingPathComponent(id)
-        guard let image = NSImage(contentsOf: fileURL) else {
-            throw DecodingError.dataCorrupted(DecodingError.Context(codingPath: [], debugDescription: "No image"))
-        }
-        self.image = image
-        self.id = id
     }
 }

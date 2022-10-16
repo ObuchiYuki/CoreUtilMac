@@ -5,89 +5,94 @@
 //  Created by yuki on 2020/10/28.
 //
 
-import Combine
 import Foundation
+import Combine
 
 extension Publisher {
-    /// UpStreamの値をキャッシュしてDownStreamに流します。
-    public func shareReplay() -> ShareReplay<Self> { ShareReplay(upstream: self) }
-}
-
-final public class ShareReplay<Upstream: Publisher>: Publisher {
-
-    public typealias Output = Upstream.Output
-    public typealias Failure = Upstream.Failure
-
-    private let upstream: Upstream
-    private var buffer: Output?
-    private var subscriptions = [Inner]()
-
-    public init(upstream: Upstream) {
-        self.upstream = upstream
-    }
-
-    public func receive<DownStream: Subscriber>(subscriber: DownStream)
-    where Failure == DownStream.Failure, Output == DownStream.Input {
-        subscriber.receive(subscription: Inner(subscriber, buffer: buffer) => { subscriptions.append($0) })
-
-        guard subscriptions.count == 1 else { return }
-
-        let sub = AnySubscriber<Output, Failure> { $0.request(.unlimited) }
-            receiveValue: {[weak self] value in
-                self?.buffer = value
-                self?.subscriptions.forEach { $0.receive(value) }
-                return .none
-            }
-            receiveCompletion: {[weak self] completion in
-                self?.subscriptions.forEach { $0.receive(completion: completion) }
-            }
-
-        upstream.subscribe(sub)
+    /// Provides a subject that shares a single subscription to the upstream publisher and replays at most `bufferSize` items emitted by that publisher
+    /// - Parameter bufferSize: limits the number of items that can be replayed
+    public func shareReplay(_ bufferSize: Int) -> AnyPublisher<Output, Failure> {
+        return multicast(subject: ReplaySubject(bufferSize)).autoconnect().eraseToAnyPublisher()
     }
 }
 
-extension ShareReplay {
-    private final class Inner: Subscription {
+public final class ReplaySubject<Output, Failure: Error>: Subject {
+    private var buffer = [Output]()
+    private let bufferSize: Int
+    private var subscriptions = [ReplaySubjectSubscription<Output, Failure>]()
+    private var completion: Subscribers.Completion<Failure>?
+    private let lock = NSRecursiveLock()
 
-        typealias Downstream = AnySubscriber<Output, Failure>
+    public init(_ bufferSize: Int = 0) {
+        self.bufferSize = bufferSize
+    }
 
-        private var buffer: Output?
-        private var demand: Subscribers.Demand = .none
-        private var downstream: Downstream?
+    /// Provides this Subject an opportunity to establish demand for any new upstream subscriptions
+    public func send(subscription: Subscription) {
+        lock.lock(); defer { lock.unlock() }
+        subscription.request(.unlimited)
+    }
 
-        init<D: Subscriber>(_ downstream: D, buffer: Output?) where Failure == D.Failure, Output == D.Input {
-            self.downstream = Downstream(downstream)
-            self.buffer = buffer
-        }
+    /// Sends a value to the subscriber.
+    public func send(_ value: Output) {
+        lock.lock(); defer { lock.unlock() }
+        buffer.append(value)
+        buffer = buffer.suffix(bufferSize)
+        subscriptions.forEach { $0.receive(value) }
+    }
 
-        func request(_ demand: Subscribers.Demand) {
-            self.demand += demand
-            _updateDemand()
-        }
+    /// Sends a completion signal to the subscriber.
+    public func send(completion: Subscribers.Completion<Failure>) {
+        lock.lock(); defer { lock.unlock() }
+        self.completion = completion
+        subscriptions.forEach { subscription in subscription.receive(completion: completion) }
+    }
 
-        func receive(_ input: Output) {
-            buffer = input
-            _updateDemand()
-        }
+    /// This function is called to attach the specified `Subscriber` to the`Publisher
+    public func receive<Downstream: Subscriber>(subscriber: Downstream) where Downstream.Failure == Failure, Downstream.Input == Output {
+        lock.lock(); defer { lock.unlock() }
+        let subscription = ReplaySubjectSubscription<Output, Failure>(downstream: AnySubscriber(subscriber))
+        subscriber.receive(subscription: subscription)
+        subscriptions.append(subscription)
+        subscription.replay(buffer, completion: completion)
+    }
+}
 
-        func receive(completion: Subscribers.Completion<Failure>) {
-            guard let downstream = downstream else { return }
+/// A class representing the connection of a subscriber to a publisher.
+public final class ReplaySubjectSubscription<Output, Failure: Error>: Subscription {
+    private let downstream: AnySubscriber<Output, Failure>
+    private var isCompleted = false
+    private var demand: Subscribers.Demand = .none
 
-            self.downstream = nil
-            self.buffer = nil
+    public init(downstream: AnySubscriber<Output, Failure>) {
+        self.downstream = downstream
+    }
 
-            downstream.receive(completion: completion)
-        }
+    // Tells a publisher that it may send more values to the subscriber.
+    public func request(_ newDemand: Subscribers.Demand) {
+        demand += newDemand
+    }
 
-        func cancel() { receive(completion: .finished) }
+    public func cancel() {
+        isCompleted = true
+    }
 
-        private func _updateDemand() {
-            guard let downstream = downstream else { return }
+    public func receive(_ value: Output) {
+        guard !isCompleted, demand > 0 else { return }
 
-            if let buffer = buffer, demand > .none {
-                demand -= 1
-                demand += downstream.receive(buffer)
-            }
-        }
+        demand += downstream.receive(value)
+        demand -= 1
+    }
+
+    public func receive(completion: Subscribers.Completion<Failure>) {
+        guard !isCompleted else { return }
+        isCompleted = true
+        downstream.receive(completion: completion)
+    }
+
+    public func replay(_ values: [Output], completion: Subscribers.Completion<Failure>?) {
+        guard !isCompleted else { return }
+        values.forEach { value in receive(value) }
+        if let completion = completion { receive(completion: completion) }
     }
 }
